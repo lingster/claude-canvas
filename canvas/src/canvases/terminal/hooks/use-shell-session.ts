@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { spawn, type Subprocess } from "bun";
+import { spawn, type Subprocess, type FileSink } from "bun";
 import type { ShellState, TerminalConfig, DEFAULT_TERMINAL_CONFIG } from "../types";
 
 export interface UseShellSessionOptions {
@@ -42,7 +42,7 @@ export function useShellSession(
   } = options;
 
   const processRef = useRef<Subprocess | null>(null);
-  const writerRef = useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
+  const writerRef = useRef<FileSink | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [lastExitCode, setLastExitCode] = useState<number | null>(null);
   const [currentCwd, setCurrentCwd] = useState(cwd);
@@ -53,14 +53,9 @@ export function useShellSession(
   useEffect(() => {
     const startShell = async () => {
       try {
-        // Use script command for pseudo-TTY on macOS/Linux
-        const isLinux = process.platform === "linux";
-        const scriptArgs = isLinux
-          ? ["script", "-q", "-c", shell, "/dev/null"]
-          : ["script", "-q", "/dev/null", shell];
-
+        // Spawn shell directly - works in tmux without needing script for PTY
         const proc = spawn({
-          cmd: scriptArgs,
+          cmd: [shell],
           cwd,
           env: {
             ...process.env,
@@ -77,9 +72,9 @@ export function useShellSession(
 
         processRef.current = proc;
 
-        // Get writer for stdin
+        // Get stdin FileSink for writing
         if (proc.stdin) {
-          writerRef.current = proc.stdin.getWriter();
+          writerRef.current = proc.stdin;
         }
 
         // Read stdout
@@ -129,6 +124,13 @@ export function useShellSession(
           onExit(exitCode);
         });
 
+        // Send a silent initialization command to prime the shell
+        // This ensures any shell startup output is flushed before user commands
+        if (writerRef.current) {
+          const encoder = new TextEncoder();
+          writerRef.current.write(encoder.encode(":\n"));
+        }
+
         onStateChange?.({ pid: proc.pid, cwd });
       } catch (err) {
         onError(err instanceof Error ? err : new Error(String(err)));
@@ -158,7 +160,7 @@ export function useShellSession(
       const markerIndex = pendingOutputRef.current.indexOf(COMMAND_MARKER);
 
       if (exitCodeMatch && markerIndex !== -1) {
-        // Command completed
+        // Command completed - extract exit code and signal completion
         const exitCode = parseInt(exitCodeMatch[1], 10);
         setLastExitCode(exitCode);
         setIsRunning(false);
@@ -169,22 +171,20 @@ export function useShellSession(
           : 0;
         commandStartTimeRef.current = null;
 
-        // Remove markers from output
-        let cleanOutput = pendingOutputRef.current
-          .replace(new RegExp(`${EXIT_CODE_MARKER}:\\d+\\n?`), "")
-          .replace(new RegExp(`${COMMAND_MARKER}\\n?`), "");
-
-        // Send cleaned output
-        if (cleanOutput.trim()) {
-          onOutput(cleanOutput, source);
-        }
-
+        // Clear the pending buffer (streaming already sent the output)
         pendingOutputRef.current = "";
         onStateChange?.({ isRunning: false, lastExitCode: exitCode });
       } else {
-        // Still accumulating or no marker system in use
-        // For now, just forward output directly
-        onOutput(text, source);
+        // Still waiting for markers - send output but filter any partial markers
+        // Filter out lines containing our markers to prevent leakage
+        const filteredText = text
+          .split("\n")
+          .filter(line => !line.includes(EXIT_CODE_MARKER) && !line.includes(COMMAND_MARKER))
+          .join("\n");
+
+        if (filteredText) {
+          onOutput(filteredText, source);
+        }
       }
     },
     [onOutput, onStateChange]
@@ -203,9 +203,13 @@ export function useShellSession(
 
       try {
         const encoder = new TextEncoder();
+        // Wrap command with stdbuf for unbuffered output (needed since we don't have a PTY)
+        // stdbuf -oL forces line-buffered stdout so output appears immediately
+        // We wrap in a subshell using the user's shell to preserve environment
+        const unbufferedCommand = `stdbuf -oL ${shell} -c ${JSON.stringify(command)} 2>&1`;
         // Send the command followed by exit code capture and marker
         // This allows us to detect when the command completes
-        const fullCommand = `${command}; echo "${EXIT_CODE_MARKER}:$?"; echo "${COMMAND_MARKER}"\n`;
+        const fullCommand = `${unbufferedCommand}; echo "${EXIT_CODE_MARKER}:$?"; echo "${COMMAND_MARKER}"\n`;
         await writerRef.current.write(encoder.encode(fullCommand));
       } catch (err) {
         setIsRunning(false);
@@ -262,7 +266,7 @@ export function useShellSession(
       processRef.current = null;
     }
     if (writerRef.current) {
-      writerRef.current.close();
+      writerRef.current.end();
       writerRef.current = null;
     }
   }, []);

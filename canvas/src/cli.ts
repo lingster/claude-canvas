@@ -225,6 +225,7 @@ program
 
     try {
       let resolved = false;
+      let buffer = "";
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
           if (!resolved) {
@@ -238,15 +239,27 @@ program
           socket: {
             data(socket, data) {
               if (resolved) return;
-              const response = JSON.parse(data.toString().trim());
-              if (response.type === "commandStarted") {
-                console.log(`Command started: ${response.command}`);
-              } else if (response.type === "commandComplete") {
-                clearTimeout(timeout);
-                resolved = true;
-                console.log(`Command completed with exit code: ${response.exitCode}`);
-                socket.end();
-                resolve();
+              // Accumulate data and parse line-delimited JSON
+              buffer += data.toString();
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const response = JSON.parse(line);
+                  if (response.type === "commandStarted") {
+                    console.log(`Command started: ${response.command}`);
+                  } else if (response.type === "commandComplete") {
+                    clearTimeout(timeout);
+                    resolved = true;
+                    console.log(`Command completed with exit code: ${response.exitCode}`);
+                    socket.end();
+                    resolve();
+                  }
+                } catch {
+                  // Ignore parse errors for partial data
+                }
               }
             },
             open(socket) {
