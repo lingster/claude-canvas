@@ -5,6 +5,8 @@ import { Document } from "./document";
 import type { DocumentConfig } from "./document/types";
 import { FlightCanvas } from "./flight";
 import type { FlightConfig } from "./flight/types";
+import { Terminal } from "./terminal";
+import type { TerminalConfig } from "./terminal/types";
 
 // Clear screen and hide cursor
 function clearScreen() {
@@ -54,6 +56,12 @@ export async function renderCanvas(
       return renderFlight(
         id,
         config as FlightConfig | undefined,
+        options
+      );
+    case "terminal":
+      return renderTerminal(
+        id,
+        config as TerminalConfig | undefined,
         options
       );
     default:
@@ -114,6 +122,25 @@ async function renderFlight(
     />,
     {
       exitOnCtrlC: true,
+    }
+  );
+  await waitUntilExit();
+}
+
+async function renderTerminal(
+  id: string,
+  config?: TerminalConfig,
+  options?: RenderOptions
+): Promise<void> {
+  const { waitUntilExit } = render(
+    <Terminal
+      id={id}
+      config={config}
+      socketPath={options?.socketPath}
+      scenario={options?.scenario || "interactive"}
+    />,
+    {
+      exitOnCtrlC: false, // We handle Ctrl+C ourselves for interrupt
     }
   );
   await waitUntilExit();

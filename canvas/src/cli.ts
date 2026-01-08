@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { program } from "commander";
-import { detectTerminal, spawnCanvas } from "./terminal";
+import { detectTerminal, spawnCanvas, listCanvasPanes, closeCanvasPane } from "./terminal";
 
 // Set window title via ANSI escape codes
 function setWindowTitle(title: string) {
@@ -208,6 +208,225 @@ program
       console.log(result);
     } catch (err) {
       console.error(`Failed to get content from canvas '${id}':`, err);
+      process.exit(1);
+    }
+  });
+
+// ============================================
+// Terminal-specific commands
+// ============================================
+
+program
+  .command("terminal-exec <id> <command>")
+  .description("Execute a command in a running terminal canvas")
+  .action(async (id: string, command: string) => {
+    const { getSocketPath } = await import("./ipc/types");
+    const socketPath = getSocketPath(id);
+
+    try {
+      let resolved = false;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            reject(new Error("Timeout waiting for response"));
+          }
+        }, 5000);
+
+        Bun.connect({
+          unix: socketPath,
+          socket: {
+            data(socket, data) {
+              if (resolved) return;
+              const response = JSON.parse(data.toString().trim());
+              if (response.type === "commandStarted") {
+                console.log(`Command started: ${response.command}`);
+              } else if (response.type === "commandComplete") {
+                clearTimeout(timeout);
+                resolved = true;
+                console.log(`Command completed with exit code: ${response.exitCode}`);
+                socket.end();
+                resolve();
+              }
+            },
+            open(socket) {
+              const msg = JSON.stringify({ type: "executeCommand", command });
+              socket.write(msg + "\n");
+            },
+            close() {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                resolve();
+              }
+            },
+            error(socket, error) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                reject(error);
+              }
+            },
+          },
+        });
+      });
+    } catch (err) {
+      console.error(`Failed to execute command in terminal '${id}':`, err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("terminal-output <id>")
+  .description("Get the last N lines of output from a running terminal canvas")
+  .option("--lines <n>", "Number of lines to retrieve", "50")
+  .action(async (id: string, options) => {
+    const { getSocketPath } = await import("./ipc/types");
+    const socketPath = getSocketPath(id);
+    const lineCount = parseInt(options.lines, 10);
+
+    try {
+      let resolved = false;
+      const result = await new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            reject(new Error("Timeout waiting for response"));
+          }
+        }, 2000);
+
+        Bun.connect({
+          unix: socketPath,
+          socket: {
+            data(socket, data) {
+              if (resolved) return;
+              clearTimeout(timeout);
+              resolved = true;
+              const response = JSON.parse(data.toString().trim());
+              if (response.type === "outputBuffer") {
+                const lines = response.lines.map((l: any) => l.content).join("\n");
+                resolve(lines);
+              } else {
+                resolve("");
+              }
+              socket.end();
+            },
+            open(socket) {
+              const msg = JSON.stringify({ type: "getOutput", lineCount, fromEnd: true });
+              socket.write(msg + "\n");
+            },
+            close() {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                resolve("");
+              }
+            },
+            error(socket, error) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                reject(error);
+              }
+            },
+          },
+        });
+      });
+      console.log(result);
+    } catch (err) {
+      console.error(`Failed to get output from terminal '${id}':`, err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("terminal-interrupt <id>")
+  .description("Send interrupt (Ctrl+C) to a running terminal canvas")
+  .action(async (id: string) => {
+    const { getSocketPath } = await import("./ipc/types");
+    const socketPath = getSocketPath(id);
+
+    try {
+      await Bun.connect({
+        unix: socketPath,
+        socket: {
+          data() {},
+          open(socket) {
+            const msg = JSON.stringify({ type: "interrupt" });
+            socket.write(msg + "\n");
+            socket.end();
+          },
+          close() {},
+          error(socket, error) {
+            console.error("Socket error:", error);
+          },
+        },
+      });
+      console.log(`Sent interrupt to terminal '${id}'`);
+    } catch (err) {
+      console.error(`Failed to interrupt terminal '${id}':`, err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("terminal-streaming <id>")
+  .description("Enable or disable output streaming for a terminal canvas")
+  .option("--enable", "Enable streaming")
+  .option("--disable", "Disable streaming")
+  .action(async (id: string, options) => {
+    const { getSocketPath } = await import("./ipc/types");
+    const socketPath = getSocketPath(id);
+    const enabled = options.enable ? true : options.disable ? false : true;
+
+    try {
+      await Bun.connect({
+        unix: socketPath,
+        socket: {
+          data() {},
+          open(socket) {
+            const msg = JSON.stringify({ type: "setStreaming", enabled });
+            socket.write(msg + "\n");
+            socket.end();
+          },
+          close() {},
+          error(socket, error) {
+            console.error("Socket error:", error);
+          },
+        },
+      });
+      console.log(`Streaming ${enabled ? "enabled" : "disabled"} for terminal '${id}'`);
+    } catch (err) {
+      console.error(`Failed to set streaming for terminal '${id}':`, err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("panes")
+  .description("List all active canvas panes")
+  .action(async () => {
+    const panes = await listCanvasPanes();
+    if (panes.length === 0) {
+      console.log("No active canvas panes");
+      return;
+    }
+    console.log("Active canvas panes:");
+    for (const pane of panes) {
+      const age = Math.round((Date.now() - pane.createdAt) / 1000);
+      console.log(`  ${pane.id} (${pane.kind}) - pane ${pane.paneId} - ${age}s ago`);
+    }
+  });
+
+program
+  .command("close <id>")
+  .description("Close a canvas pane by ID")
+  .action(async (id: string) => {
+    const success = await closeCanvasPane(id);
+    if (success) {
+      console.log(`Closed canvas pane '${id}'`);
+    } else {
+      console.error(`Failed to close canvas pane '${id}' (not found or already closed)`);
       process.exit(1);
     }
   });

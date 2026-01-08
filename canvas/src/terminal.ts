@@ -14,11 +14,13 @@ export function detectTerminal(): TerminalEnvironment {
 export interface SpawnResult {
   method: string;
   pid?: number;
+  paneId?: string;
 }
 
 export interface SpawnOptions {
   socketPath?: string;
   scenario?: string;
+  forceNewPane?: boolean; // For terminals, always create new pane
 }
 
 export async function spawnCanvas(
@@ -53,41 +55,183 @@ export async function spawnCanvas(
     command += ` --scenario ${options.scenario}`;
   }
 
-  const result = await spawnTmux(command);
-  if (result) return { method: "tmux" };
+  // For terminal kind, always create new pane (multi-pane support)
+  const forceNew = kind === "terminal" || options?.forceNewPane;
+
+  const result = await spawnTmux(command, id, forceNew);
+  if (result.success) {
+    return { method: "tmux", paneId: result.paneId };
+  }
 
   throw new Error("Failed to spawn tmux pane");
 }
 
-// File to track the canvas pane ID
-const CANVAS_PANE_FILE = "/tmp/claude-canvas-pane-id";
+// ============================================
+// Multi-pane tracking
+// ============================================
 
-async function getCanvasPaneId(): Promise<string | null> {
+interface PaneInfo {
+  id: string;        // Canvas ID
+  paneId: string;    // tmux pane ID (e.g., %5)
+  kind: string;      // Canvas kind (calendar, document, terminal, etc.)
+  createdAt: number; // Timestamp
+}
+
+interface PaneRegistry {
+  panes: Record<string, PaneInfo>;
+  defaultPane?: string; // For backwards compatibility (non-terminal canvases)
+}
+
+const PANES_FILE = "/tmp/claude-canvas-panes.json";
+// Keep old file for backwards compatibility during migration
+const LEGACY_PANE_FILE = "/tmp/claude-canvas-pane-id";
+
+async function loadPaneRegistry(): Promise<PaneRegistry> {
   try {
-    const file = Bun.file(CANVAS_PANE_FILE);
+    const file = Bun.file(PANES_FILE);
     if (await file.exists()) {
-      const paneId = (await file.text()).trim();
-      // Verify the pane still exists by checking if tmux can find it
-      const result = spawnSync("tmux", ["display-message", "-t", paneId, "-p", "#{pane_id}"]);
-      const output = result.stdout?.toString().trim();
-      // Pane exists only if command succeeds AND returns the same pane ID
-      if (result.status === 0 && output === paneId) {
-        return paneId;
-      }
-      // Stale pane reference - clean up the file
-      await Bun.write(CANVAS_PANE_FILE, "");
+      return JSON.parse(await file.text());
     }
   } catch {
-    // Ignore errors
+    // Ignore parse errors
   }
+  return { panes: {} };
+}
+
+async function savePaneRegistry(registry: PaneRegistry): Promise<void> {
+  await Bun.write(PANES_FILE, JSON.stringify(registry, null, 2));
+}
+
+async function getCanvasPaneId(canvasId?: string): Promise<string | null> {
+  const registry = await loadPaneRegistry();
+
+  // If specific canvas ID requested
+  if (canvasId && registry.panes[canvasId]) {
+    const paneInfo = registry.panes[canvasId];
+    if (await verifyPaneExists(paneInfo.paneId)) {
+      return paneInfo.paneId;
+    }
+    // Clean up stale entry
+    delete registry.panes[canvasId];
+    await savePaneRegistry(registry);
+    return null;
+  }
+
+  // Fall back to default pane for non-terminal canvases
+  if (registry.defaultPane) {
+    if (await verifyPaneExists(registry.defaultPane)) {
+      return registry.defaultPane;
+    }
+    registry.defaultPane = undefined;
+    await savePaneRegistry(registry);
+  }
+
+  // Try legacy file
+  try {
+    const legacyFile = Bun.file(LEGACY_PANE_FILE);
+    if (await legacyFile.exists()) {
+      const paneId = (await legacyFile.text()).trim();
+      if (paneId && await verifyPaneExists(paneId)) {
+        return paneId;
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
   return null;
 }
 
-async function saveCanvasPaneId(paneId: string): Promise<void> {
-  await Bun.write(CANVAS_PANE_FILE, paneId);
+async function verifyPaneExists(paneId: string): Promise<boolean> {
+  const result = spawnSync("tmux", ["display-message", "-t", paneId, "-p", "#{pane_id}"]);
+  const output = result.stdout?.toString().trim();
+  return result.status === 0 && output === paneId;
 }
 
-async function createNewPane(command: string): Promise<boolean> {
+async function saveCanvasPaneId(
+  paneId: string,
+  canvasId: string,
+  kind: string
+): Promise<void> {
+  const registry = await loadPaneRegistry();
+
+  // Save pane info
+  registry.panes[canvasId] = {
+    id: canvasId,
+    paneId,
+    kind,
+    createdAt: Date.now(),
+  };
+
+  // For non-terminal canvases, also set as default
+  if (kind !== "terminal") {
+    registry.defaultPane = paneId;
+    // Legacy compatibility
+    await Bun.write(LEGACY_PANE_FILE, paneId);
+  }
+
+  await savePaneRegistry(registry);
+}
+
+export async function listCanvasPanes(): Promise<PaneInfo[]> {
+  const registry = await loadPaneRegistry();
+  const validPanes: PaneInfo[] = [];
+
+  for (const [id, info] of Object.entries(registry.panes)) {
+    if (await verifyPaneExists(info.paneId)) {
+      validPanes.push(info);
+    } else {
+      // Clean up stale entry
+      delete registry.panes[id];
+    }
+  }
+
+  // Save cleaned registry
+  await savePaneRegistry(registry);
+  return validPanes;
+}
+
+export async function closeCanvasPane(canvasId: string): Promise<boolean> {
+  const registry = await loadPaneRegistry();
+  const paneInfo = registry.panes[canvasId];
+
+  if (!paneInfo) {
+    return false;
+  }
+
+  // Kill the tmux pane
+  const result = spawnSync("tmux", ["kill-pane", "-t", paneInfo.paneId]);
+
+  // Remove from registry
+  delete registry.panes[canvasId];
+  if (registry.defaultPane === paneInfo.paneId) {
+    registry.defaultPane = undefined;
+  }
+  await savePaneRegistry(registry);
+
+  return result.status === 0;
+}
+
+interface SpawnTmuxResult {
+  success: boolean;
+  paneId?: string;
+}
+
+// Extract canvas ID from command (for pane tracking)
+function extractCanvasId(command: string): { id: string; kind: string } {
+  const idMatch = command.match(/--id\s+(\S+)/);
+  const kindMatch = command.match(/show\s+(\S+)/);
+  return {
+    id: idMatch?.[1] || `canvas-${Date.now()}`,
+    kind: kindMatch?.[1] || "unknown",
+  };
+}
+
+async function createNewPane(
+  command: string,
+  canvasId: string,
+  kind: string
+): Promise<SpawnTmuxResult> {
   return new Promise((resolve) => {
     // Use split-window -h for vertical split (side by side)
     // -p 67 gives canvas 2/3 width (1:2 ratio, Claude:Canvas)
@@ -100,15 +244,21 @@ async function createNewPane(command: string): Promise<boolean> {
     });
     proc.on("close", async (code) => {
       if (code === 0 && paneId.trim()) {
-        await saveCanvasPaneId(paneId.trim());
+        const trimmedPaneId = paneId.trim();
+        await saveCanvasPaneId(trimmedPaneId, canvasId, kind);
+        resolve({ success: true, paneId: trimmedPaneId });
+      } else {
+        resolve({ success: false });
       }
-      resolve(code === 0);
     });
-    proc.on("error", () => resolve(false));
+    proc.on("error", () => resolve({ success: false }));
   });
 }
 
-async function reuseExistingPane(paneId: string, command: string): Promise<boolean> {
+async function reuseExistingPane(
+  paneId: string,
+  command: string
+): Promise<SpawnTmuxResult> {
   return new Promise((resolve) => {
     // Send Ctrl+C to interrupt any running process
     const killProc = spawn("tmux", ["send-keys", "-t", paneId, "C-c"]);
@@ -118,29 +268,42 @@ async function reuseExistingPane(paneId: string, command: string): Promise<boole
         // Clear the terminal and run the new command
         const args = ["send-keys", "-t", paneId, `clear && ${command}`, "Enter"];
         const proc = spawn("tmux", args);
-        proc.on("close", (code) => resolve(code === 0));
-        proc.on("error", () => resolve(false));
+        proc.on("close", (code) => {
+          resolve({ success: code === 0, paneId: code === 0 ? paneId : undefined });
+        });
+        proc.on("error", () => resolve({ success: false }));
       }, 150);
     });
-    killProc.on("error", () => resolve(false));
+    killProc.on("error", () => resolve({ success: false }));
   });
 }
 
-async function spawnTmux(command: string): Promise<boolean> {
+async function spawnTmux(
+  command: string,
+  canvasId: string,
+  forceNew: boolean = false
+): Promise<SpawnTmuxResult> {
+  const { kind } = extractCanvasId(command);
+
+  // For terminals or when forceNew is true, always create new pane
+  if (forceNew) {
+    return createNewPane(command, canvasId, kind);
+  }
+
   // Check if we have an existing canvas pane to reuse
   const existingPaneId = await getCanvasPaneId();
 
   if (existingPaneId) {
     // Try to reuse existing pane
-    const reused = await reuseExistingPane(existingPaneId, command);
-    if (reused) {
-      return true;
+    const result = await reuseExistingPane(existingPaneId, command);
+    if (result.success) {
+      // Update registry with new canvas ID
+      await saveCanvasPaneId(existingPaneId, canvasId, kind);
+      return result;
     }
-    // Reuse failed (pane may have been closed) - clear stale reference and create new
-    await Bun.write(CANVAS_PANE_FILE, "");
   }
 
   // Create a new split pane
-  return createNewPane(command);
+  return createNewPane(command, canvasId, kind);
 }
 
