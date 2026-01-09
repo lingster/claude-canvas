@@ -39,6 +39,7 @@ export function Terminal({
       maxBufferLines: initialConfig?.maxBufferLines || 10000,
       streamingEnabled: initialConfig?.streamingEnabled || false,
       title: initialConfig?.title,
+      initialCommand: initialConfig?.initialCommand,
     }),
     [initialConfig]
   );
@@ -57,6 +58,9 @@ export function Terminal({
     cwd: config.cwd,
     commandHistory: [],
   });
+
+  // Track if initial command has been executed
+  const initialCommandExecutedRef = React.useRef(false);
 
   // Streaming state
   const [streamingEnabled, setStreamingEnabled] = useState(
@@ -165,14 +169,6 @@ export function Terminal({
     };
   }, [stdout]);
 
-  // Send ready when shell is initialized
-  useEffect(() => {
-    const pid = shell.getPid();
-    if (pid) {
-      ipc.sendReady();
-    }
-  }, [shell.getPid(), ipc]);
-
   // Execute command from user input
   const executeCommand = useCallback(
     (command: string) => {
@@ -197,6 +193,23 @@ export function Terminal({
     },
     [shell, outputBuffer, ipc]
   );
+
+  // Send ready when shell is initialized and execute initial command if provided
+  useEffect(() => {
+    const pid = shell.getPid();
+    if (pid) {
+      ipc.sendReady();
+
+      // Execute initial command if provided and not already executed
+      if (config.initialCommand && !initialCommandExecutedRef.current) {
+        initialCommandExecutedRef.current = true;
+        // Small delay to ensure shell is fully ready after sourcing rc files
+        setTimeout(() => {
+          executeCommand(config.initialCommand!);
+        }, 100);
+      }
+    }
+  }, [shell.getPid(), ipc, config.initialCommand, executeCommand]);
 
   // Keyboard input handling
   useInput((input, key) => {

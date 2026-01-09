@@ -7,6 +7,7 @@ export interface TerminalConfig {
   maxBufferLines?: number;     // Max output buffer lines (default: 10000)
   streamingEnabled?: boolean;  // Enable output streaming to controller (default: false)
   title?: string;              // Optional title for the canvas
+  initialCommand?: string;     // Command to run when the shell starts
 }
 
 export interface OutputLine {
@@ -43,11 +44,12 @@ export interface TerminalResult {
 }
 
 // Default configuration values
-export const DEFAULT_TERMINAL_CONFIG: Required<Omit<TerminalConfig, "env" | "title">> & Pick<TerminalConfig, "env" | "title"> = {
+export const DEFAULT_TERMINAL_CONFIG: Required<Omit<TerminalConfig, "env" | "title" | "initialCommand">> & Pick<TerminalConfig, "env" | "title" | "initialCommand"> = {
   shell: process.env.SHELL || "/bin/bash",
   cwd: process.env.HOME || "/",
   env: undefined,
   maxBufferLines: 10000,
   streamingEnabled: false,
   title: undefined,
+  initialCommand: undefined,
 };

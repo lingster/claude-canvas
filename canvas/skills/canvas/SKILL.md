@@ -2,7 +2,7 @@
 name: canvas
 description: |
   **The primary skill for terminal TUI components.** Covers spawning, controlling, and interacting with terminal canvases.
-  Use when displaying calendars, documents, or flight bookings.
+  Use when displaying calendars, documents, flight bookings, or running terminal commands.
 ---
 
 # Canvas TUI Toolkit
@@ -25,6 +25,11 @@ Try asking Claude things like:
 - "Find flights from SFO to Denver next Friday"
 - "Book me a window seat on the morning flight"
 
+**Terminal:**
+- "Start a dev server for my project"
+- "Run the tests in a separate terminal"
+- "Open a terminal to monitor logs"
+
 ## Overview
 
 Canvas provides interactive terminal displays (TUIs) that Claude can spawn and control. Each canvas type supports multiple scenarios for different interaction modes.
@@ -36,6 +41,7 @@ Canvas provides interactive terminal displays (TUIs) that Claude can spawn and c
 | `calendar` | Display calendars, pick meeting times | `display`, `meeting-picker` |
 | `document` | View/edit markdown documents | `display`, `edit`, `email-preview` |
 | `flight` | Flight comparison and seat selection | `booking` |
+| `terminal` | Run shell commands with full user environment | `interactive`, `display` |
 
 ## Quick Start
 
@@ -47,6 +53,9 @@ bun run src/cli.ts show calendar
 
 # Spawn canvas in new tmux split
 bun run src/cli.ts spawn calendar --scenario meeting-picker --config '{...}'
+
+# Spawn terminal with initial command and working directory
+bun run src/cli.ts spawn terminal --name "backend" --config '{"cwd": "/project", "initialCommand": "npm run dev"}'
 ```
 
 ## Spawning Canvases
@@ -113,3 +122,4 @@ if (result.success && result.data) {
 | `calendar` | Calendar display and meeting picker details |
 | `document` | Document rendering and text selection |
 | `flight` | Flight comparison and seat map details |
+| `terminal` | Terminal shell sessions with initial commands and user environment |

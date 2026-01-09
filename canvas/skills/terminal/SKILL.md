@@ -13,9 +13,17 @@ spawn terminal --id myterm --config '{"cwd": "/path/to/project"}'
 
 # Spawn with a custom pane name/title
 spawn terminal --id myterm --name "backend"
+
+# Spawn with an initial command to run on startup
+spawn terminal --id server --config '{"initialCommand": "npm run dev", "cwd": "/project"}'
+
+# Spawn with both name and initial command
+spawn terminal --id backend --name "backend" --config '{"initialCommand": "bun run dev", "cwd": "/project"}'
 ```
 
 Each terminal gets its own tmux pane and maintains an independent shell session.
+
+**Note:** The shell automatically sources your rc files (`.bashrc`, `.zshrc`, etc.) on startup, giving you access to your aliases, functions, and environment variables.
 
 ## Pane Naming
 
@@ -91,6 +99,7 @@ close webserver
 | `maxBufferLines` | number | 10000 | Max lines to keep in output buffer |
 | `streamingEnabled` | boolean | false | Stream output to Claude in real-time |
 | `title` | string | terminal ID | Display title |
+| `initialCommand` | string | - | Command to run automatically when terminal starts |
 
 ## Scenarios
 
@@ -131,9 +140,8 @@ close webserver
 ## Example Workflow
 
 ```bash
-# 1. Start a web server with a named pane
-spawn terminal --id server --name "backend" --config '{"cwd": "/project"}'
-terminal-exec server "npm run dev"
+# 1. Start a web server with a named pane (command runs immediately on spawn)
+spawn terminal --id server --name "backend" --config '{"cwd": "/project", "initialCommand": "npm run dev"}'
 
 # 2. Open another terminal for testing with its own name
 spawn terminal --id tests --name "tests" --config '{"cwd": "/project"}'

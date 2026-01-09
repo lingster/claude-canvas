@@ -4,7 +4,7 @@ Interactive terminal TUI components for Claude Code.
 
 ## Overview
 
-Canvas provides spawnable terminal displays (calendars, documents, flight booking) with real-time IPC communication. Claude can spawn these TUIs in tmux split panes and receive user selections.
+Canvas provides spawnable terminal displays (calendars, documents, flight booking, terminals) with real-time IPC communication. Claude can spawn these TUIs in tmux split panes and receive user selections.
 
 ## Canvas Types
 
@@ -13,6 +13,7 @@ Canvas provides spawnable terminal displays (calendars, documents, flight bookin
 | `calendar` | Display events, pick meeting times |
 | `document` | View/edit markdown documents |
 | `flight` | Compare flights and select seats |
+| `terminal` | Run shell commands with user's aliases and environment |
 
 ## Installation
 
@@ -36,6 +37,9 @@ bun run src/cli.ts spawn calendar --scenario meeting-picker --config '{"calendar
 
 # Spawn document editor
 bun run src/cli.ts spawn document --scenario edit --config '{"content": "# Hello"}'
+
+# Spawn terminal with initial command
+bun run src/cli.ts spawn terminal --name "backend" --config '{"cwd": "/project", "initialCommand": "npm run dev"}'
 ```
 
 ## Commands
@@ -48,6 +52,7 @@ bun run src/cli.ts spawn document --scenario edit --config '{"content": "# Hello
 - `calendar` - Calendar display and meeting picker
 - `document` - Markdown rendering and text selection
 - `flight` - Flight comparison and seatmaps
+- `terminal` - Terminal sessions with initial commands and user environment
 
 ## Requirements
 

@@ -53,7 +53,8 @@ export function useShellSession(
   useEffect(() => {
     const startShell = async () => {
       try {
-        // Spawn shell directly - works in tmux without needing script for PTY
+        // Spawn shell without -i flag (which conflicts with Ink's terminal handling)
+        // We'll source rc files explicitly in the initialization command
         const proc = spawn({
           cmd: [shell],
           cwd,
@@ -61,7 +62,7 @@ export function useShellSession(
             ...process.env,
             ...env,
             TERM: "xterm-256color",
-            // Ensure shell doesn't use complex prompts that interfere
+            // Use simple prompts to avoid cluttering output with complex escape sequences
             PS1: "$ ",
             PS2: "> ",
           },
@@ -124,11 +125,29 @@ export function useShellSession(
           onExit(exitCode);
         });
 
-        // Send a silent initialization command to prime the shell
-        // This ensures any shell startup output is flushed before user commands
+        // Source user's rc files to get aliases, functions, and environment variables
+        // This is done explicitly rather than using -i flag which conflicts with Ink
         if (writerRef.current) {
           const encoder = new TextEncoder();
-          writerRef.current.write(encoder.encode(":\n"));
+          const home = process.env.HOME || "";
+
+          // Determine which rc file to source based on shell type
+          let rcFile = "";
+          if (shell.includes("zsh")) {
+            rcFile = `${home}/.zshrc`;
+          } else if (shell.includes("bash")) {
+            rcFile = `${home}/.bashrc`;
+          }
+
+          // Source the rc file if it exists, silently (suppress output)
+          if (rcFile) {
+            writerRef.current.write(
+              encoder.encode(`[ -f "${rcFile}" ] && source "${rcFile}" >/dev/null 2>&1; :\n`)
+            );
+          } else {
+            // Just a no-op to prime the shell
+            writerRef.current.write(encoder.encode(":\n"));
+          }
         }
 
         onStateChange?.({ pid: proc.pid, cwd });

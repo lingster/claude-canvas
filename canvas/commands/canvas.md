@@ -20,6 +20,7 @@ Ask what kind of canvas the user needs:
 - **Calendar** - Display events or pick meeting times
 - **Document** - View or edit markdown content
 - **Flight** - Compare flights and select seats
+- **Terminal** - Start a new terminal 
 
 ### Step 2: Gather Configuration
 
@@ -40,6 +41,11 @@ Based on the canvas type, collect the necessary configuration:
 - Flight options (airline, times, prices)
 - Seatmap configuration
 - Origin/destination airports
+
+**Terminal:**
+- Working directory (`cwd`)
+- Initial command to run (`initialCommand`)
+- Pane title (`--name` flag)
 
 ### Step 3: Spawn Canvas
 
@@ -64,6 +70,9 @@ bun run src/cli.ts spawn document --scenario edit --config '{"content": "# Title
 
 # Flight booking
 bun run src/cli.ts spawn flight --config '{"flights": [...]}'
+
+# Terminal with initial command
+bun run src/cli.ts spawn terminal --name "backend" --config '{"cwd": "/project", "initialCommand": "npm run dev"}'
 ```
 
 ### Step 4: Handle Results
@@ -87,3 +96,4 @@ Read these skills for detailed configuration options:
 - `calendar` - Calendar events and meeting picker
 - `document` - Markdown rendering and text selection
 - `flight` - Flight comparison and seatmaps
+- `terminal` - Terminal to run shell commands
