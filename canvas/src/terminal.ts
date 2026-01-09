@@ -21,6 +21,7 @@ export interface SpawnOptions {
   socketPath?: string;
   scenario?: string;
   forceNewPane?: boolean; // For terminals, always create new pane
+  name?: string; // Custom pane title (defaults to pane index if not specified)
 }
 
 export async function spawnCanvas(
@@ -58,7 +59,7 @@ export async function spawnCanvas(
   // For terminal kind, always create new pane (multi-pane support)
   const forceNew = kind === "terminal" || options?.forceNewPane;
 
-  const result = await spawnTmux(command, id, forceNew);
+  const result = await spawnTmux(command, id, forceNew, options?.name);
   if (result.success) {
     return { method: "tmux", paneId: result.paneId };
   }
@@ -148,6 +149,15 @@ async function verifyPaneExists(paneId: string): Promise<boolean> {
   return result.status === 0 && output === paneId;
 }
 
+function getPaneIndex(paneId: string): string {
+  const result = spawnSync("tmux", ["display-message", "-t", paneId, "-p", "#{pane_index}"]);
+  return result.stdout?.toString().trim() || "0";
+}
+
+function setPaneTitle(paneId: string, title: string): void {
+  spawnSync("tmux", ["select-pane", "-t", paneId, "-T", title]);
+}
+
 async function saveCanvasPaneId(
   paneId: string,
   canvasId: string,
@@ -230,7 +240,8 @@ function extractCanvasId(command: string): { id: string; kind: string } {
 async function createNewPane(
   command: string,
   canvasId: string,
-  kind: string
+  kind: string,
+  name?: string
 ): Promise<SpawnTmuxResult> {
   return new Promise((resolve) => {
     // Use split-window -h for vertical split (side by side)
@@ -246,6 +257,9 @@ async function createNewPane(
       if (code === 0 && paneId.trim()) {
         const trimmedPaneId = paneId.trim();
         await saveCanvasPaneId(trimmedPaneId, canvasId, kind);
+        // Set pane title: use provided name, or default to pane index
+        const paneTitle = name || getPaneIndex(trimmedPaneId);
+        setPaneTitle(trimmedPaneId, paneTitle);
         resolve({ success: true, paneId: trimmedPaneId });
       } else {
         resolve({ success: false });
@@ -281,13 +295,14 @@ async function reuseExistingPane(
 async function spawnTmux(
   command: string,
   canvasId: string,
-  forceNew: boolean = false
+  forceNew: boolean = false,
+  name?: string
 ): Promise<SpawnTmuxResult> {
   const { kind } = extractCanvasId(command);
 
   // For terminals or when forceNew is true, always create new pane
   if (forceNew) {
-    return createNewPane(command, canvasId, kind);
+    return createNewPane(command, canvasId, kind, name);
   }
 
   // Check if we have an existing canvas pane to reuse
@@ -299,11 +314,15 @@ async function spawnTmux(
     if (result.success) {
       // Update registry with new canvas ID
       await saveCanvasPaneId(existingPaneId, canvasId, kind);
+      // Update pane title if name provided
+      if (name) {
+        setPaneTitle(existingPaneId, name);
+      }
       return result;
     }
   }
 
   // Create a new split pane
-  return createNewPane(command, canvasId, kind);
+  return createNewPane(command, canvasId, kind, name);
 }
 

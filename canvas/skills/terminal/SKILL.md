@@ -10,9 +10,34 @@ spawn terminal --id webserver --scenario interactive
 
 # Spawn with custom working directory
 spawn terminal --id myterm --config '{"cwd": "/path/to/project"}'
+
+# Spawn with a custom pane name/title
+spawn terminal --id myterm --name "backend"
 ```
 
 Each terminal gets its own tmux pane and maintains an independent shell session.
+
+## Pane Naming
+
+Each pane can have a title for easier identification. The title is set via tmux's `pane_title` property.
+
+```bash
+# Spawn with a custom name
+spawn terminal --id server --name "backend"
+
+# If no name is specified, the pane index (0, 1, 2...) is used as the default title
+spawn terminal --id myterm  # Title will be the pane index
+```
+
+To manually set or change a pane title after creation:
+```bash
+tmux select-pane -t <pane_id> -T "new-title"
+```
+
+To view pane titles:
+```bash
+tmux list-panes -F "Pane #{pane_index}: #{pane_title}"
+```
 
 ## Sending Commands
 
@@ -106,12 +131,12 @@ close webserver
 ## Example Workflow
 
 ```bash
-# 1. Start a web server
-spawn terminal --id server --config '{"cwd": "/project"}'
+# 1. Start a web server with a named pane
+spawn terminal --id server --name "backend" --config '{"cwd": "/project"}'
 terminal-exec server "npm run dev"
 
-# 2. Open another terminal for testing
-spawn terminal --id tests --config '{"cwd": "/project"}'
+# 2. Open another terminal for testing with its own name
+spawn terminal --id tests --name "tests" --config '{"cwd": "/project"}'
 
 # 3. Check server output
 terminal-output server --lines 20
