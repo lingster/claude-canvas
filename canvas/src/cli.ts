@@ -215,206 +215,61 @@ program
   });
 
 // ============================================
-// Terminal-specific commands
+// Terminal-specific commands (pure tmux - no IPC needed)
 // ============================================
+
+// Helper to get pane ID from canvas ID
+async function getTerminalPaneId(canvasId: string): Promise<string | null> {
+  const panes = await listCanvasPanes();
+  const pane = panes.find(p => p.id === canvasId);
+  return pane?.paneId || null;
+}
 
 program
   .command("terminal-exec <id> <command>")
-  .description("Execute a command in a running terminal canvas")
+  .description("Execute a command in a terminal pane")
   .action(async (id: string, command: string) => {
-    const { getSocketPath } = await import("./ipc/types");
-    const socketPath = getSocketPath(id);
-
-    try {
-      let resolved = false;
-      let buffer = "";
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            reject(new Error("Timeout waiting for response"));
-          }
-        }, 5000);
-
-        Bun.connect({
-          unix: socketPath,
-          socket: {
-            data(socket, data) {
-              if (resolved) return;
-              // Accumulate data and parse line-delimited JSON
-              buffer += data.toString();
-              const lines = buffer.split("\n");
-              buffer = lines.pop() || "";
-
-              for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                  const response = JSON.parse(line);
-                  if (response.type === "commandStarted") {
-                    console.log(`Command started: ${response.command}`);
-                  } else if (response.type === "commandComplete") {
-                    clearTimeout(timeout);
-                    resolved = true;
-                    console.log(`Command completed with exit code: ${response.exitCode}`);
-                    socket.end();
-                    resolve();
-                  }
-                } catch {
-                  // Ignore parse errors for partial data
-                }
-              }
-            },
-            open(socket) {
-              const msg = JSON.stringify({ type: "executeCommand", command });
-              socket.write(msg + "\n");
-            },
-            close() {
-              if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                resolve();
-              }
-            },
-            error(socket, error) {
-              if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                reject(error);
-              }
-            },
-          },
-        });
-      });
-    } catch (err) {
-      console.error(`Failed to execute command in terminal '${id}':`, err);
+    const paneId = await getTerminalPaneId(id);
+    if (!paneId) {
+      console.error(`Terminal '${id}' not found`);
       process.exit(1);
     }
+
+    const { terminalExec } = await import("./terminal");
+    terminalExec(paneId, command);
+    console.log(`Sent command to terminal '${id}'`);
   });
 
 program
   .command("terminal-output <id>")
-  .description("Get the last N lines of output from a running terminal canvas")
+  .description("Get the last N lines of output from a terminal pane")
   .option("--lines <n>", "Number of lines to retrieve", "50")
   .action(async (id: string, options) => {
-    const { getSocketPath } = await import("./ipc/types");
-    const socketPath = getSocketPath(id);
-    const lineCount = parseInt(options.lines, 10);
-
-    try {
-      let resolved = false;
-      const result = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            reject(new Error("Timeout waiting for response"));
-          }
-        }, 2000);
-
-        Bun.connect({
-          unix: socketPath,
-          socket: {
-            data(socket, data) {
-              if (resolved) return;
-              clearTimeout(timeout);
-              resolved = true;
-              const response = JSON.parse(data.toString().trim());
-              if (response.type === "outputBuffer") {
-                const lines = response.lines.map((l: any) => l.content).join("\n");
-                resolve(lines);
-              } else {
-                resolve("");
-              }
-              socket.end();
-            },
-            open(socket) {
-              const msg = JSON.stringify({ type: "getOutput", lineCount, fromEnd: true });
-              socket.write(msg + "\n");
-            },
-            close() {
-              if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                resolve("");
-              }
-            },
-            error(socket, error) {
-              if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                reject(error);
-              }
-            },
-          },
-        });
-      });
-      console.log(result);
-    } catch (err) {
-      console.error(`Failed to get output from terminal '${id}':`, err);
+    const paneId = await getTerminalPaneId(id);
+    if (!paneId) {
+      console.error(`Terminal '${id}' not found`);
       process.exit(1);
     }
+
+    const { terminalGetOutput } = await import("./terminal");
+    const lineCount = parseInt(options.lines, 10);
+    const output = terminalGetOutput(paneId, lineCount);
+    console.log(output);
   });
 
 program
   .command("terminal-interrupt <id>")
-  .description("Send interrupt (Ctrl+C) to a running terminal canvas")
+  .description("Send interrupt (Ctrl+C) to a terminal pane")
   .action(async (id: string) => {
-    const { getSocketPath } = await import("./ipc/types");
-    const socketPath = getSocketPath(id);
-
-    try {
-      await Bun.connect({
-        unix: socketPath,
-        socket: {
-          data() {},
-          open(socket) {
-            const msg = JSON.stringify({ type: "interrupt" });
-            socket.write(msg + "\n");
-            socket.end();
-          },
-          close() {},
-          error(socket, error) {
-            console.error("Socket error:", error);
-          },
-        },
-      });
-      console.log(`Sent interrupt to terminal '${id}'`);
-    } catch (err) {
-      console.error(`Failed to interrupt terminal '${id}':`, err);
+    const paneId = await getTerminalPaneId(id);
+    if (!paneId) {
+      console.error(`Terminal '${id}' not found`);
       process.exit(1);
     }
-  });
 
-program
-  .command("terminal-streaming <id>")
-  .description("Enable or disable output streaming for a terminal canvas")
-  .option("--enable", "Enable streaming")
-  .option("--disable", "Disable streaming")
-  .action(async (id: string, options) => {
-    const { getSocketPath } = await import("./ipc/types");
-    const socketPath = getSocketPath(id);
-    const enabled = options.enable ? true : options.disable ? false : true;
-
-    try {
-      await Bun.connect({
-        unix: socketPath,
-        socket: {
-          data() {},
-          open(socket) {
-            const msg = JSON.stringify({ type: "setStreaming", enabled });
-            socket.write(msg + "\n");
-            socket.end();
-          },
-          close() {},
-          error(socket, error) {
-            console.error("Socket error:", error);
-          },
-        },
-      });
-      console.log(`Streaming ${enabled ? "enabled" : "disabled"} for terminal '${id}'`);
-    } catch (err) {
-      console.error(`Failed to set streaming for terminal '${id}':`, err);
-      process.exit(1);
-    }
+    const { terminalInterrupt } = await import("./terminal");
+    terminalInterrupt(paneId);
+    console.log(`Sent interrupt to terminal '${id}'`);
   });
 
 program

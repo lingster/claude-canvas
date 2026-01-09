@@ -222,13 +222,10 @@ export function useShellSession(
 
       try {
         const encoder = new TextEncoder();
-        // Wrap command with stdbuf for unbuffered output (needed since we don't have a PTY)
-        // stdbuf -oL forces line-buffered stdout so output appears immediately
-        // We wrap in a subshell using the user's shell to preserve environment
-        const unbufferedCommand = `stdbuf -oL ${shell} -c ${JSON.stringify(command)} 2>&1`;
-        // Send the command followed by exit code capture and marker
-        // This allows us to detect when the command completes
-        const fullCommand = `${unbufferedCommand}; echo "${EXIT_CODE_MARKER}:$?"; echo "${COMMAND_MARKER}"\n`;
+        // Run command directly in the shell (not a subshell) to preserve aliases/functions from rc files
+        // We capture the exit code separately since we need it after the command completes
+        // The 2>&1 redirects stderr to stdout so we capture all output
+        const fullCommand = `${command} 2>&1; echo "${EXIT_CODE_MARKER}:$?"; echo "${COMMAND_MARKER}"\n`;
         await writerRef.current.write(encoder.encode(fullCommand));
       } catch (err) {
         setIsRunning(false);

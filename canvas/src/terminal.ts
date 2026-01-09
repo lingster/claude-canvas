@@ -24,6 +24,87 @@ export interface SpawnOptions {
   name?: string; // Custom pane title (defaults to pane index if not specified)
 }
 
+export interface TerminalConfig {
+  cwd?: string;
+  initialCommand?: string;
+  shell?: string;
+}
+
+// Spawn a pure tmux terminal (real shell with PTY - supports SSH, vim, etc.)
+export async function spawnTerminalPane(
+  id: string,
+  config?: TerminalConfig,
+  options?: SpawnOptions
+): Promise<SpawnResult> {
+  const env = detectTerminal();
+
+  if (!env.inTmux) {
+    throw new Error("Terminal requires tmux. Please run inside a tmux session.");
+  }
+
+  const shell = config?.shell || process.env.SHELL || "/bin/zsh";
+  const cwd = config?.cwd || process.env.HOME || "/";
+
+  // Create tmux split with a real shell
+  const result = await new Promise<SpawnTmuxResult>((resolve) => {
+    // Use split-window -h for vertical split (side by side)
+    // -c sets the working directory
+    // -P -F prints the new pane ID
+    const args = [
+      "split-window", "-h", "-p", "67",
+      "-c", cwd,
+      "-P", "-F", "#{pane_id}",
+      shell
+    ];
+    const proc = spawn("tmux", args);
+    let paneId = "";
+    proc.stdout?.on("data", (data) => {
+      paneId += data.toString();
+    });
+    proc.on("close", async (code) => {
+      if (code === 0 && paneId.trim()) {
+        const trimmedPaneId = paneId.trim();
+        await saveCanvasPaneId(trimmedPaneId, id, "terminal");
+        // Set pane title
+        const paneTitle = options?.name || getPaneIndex(trimmedPaneId);
+        setPaneTitle(trimmedPaneId, paneTitle);
+        resolve({ success: true, paneId: trimmedPaneId });
+      } else {
+        resolve({ success: false });
+      }
+    });
+    proc.on("error", () => resolve({ success: false }));
+  });
+
+  if (!result.success || !result.paneId) {
+    throw new Error("Failed to spawn tmux terminal pane");
+  }
+
+  // If initial command provided, send it after a short delay for shell to initialize
+  if (config?.initialCommand) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    spawnSync("tmux", ["send-keys", "-t", result.paneId, config.initialCommand, "Enter"]);
+  }
+
+  return { method: "tmux", paneId: result.paneId };
+}
+
+// Execute a command in a tmux terminal pane
+export function terminalExec(paneId: string, command: string): void {
+  spawnSync("tmux", ["send-keys", "-t", paneId, command, "Enter"]);
+}
+
+// Get output from a tmux terminal pane
+export function terminalGetOutput(paneId: string, lines: number = 50): string {
+  const result = spawnSync("tmux", ["capture-pane", "-t", paneId, "-p", "-S", `-${lines}`]);
+  return result.stdout?.toString() || "";
+}
+
+// Send interrupt (Ctrl+C) to a tmux terminal pane
+export function terminalInterrupt(paneId: string): void {
+  spawnSync("tmux", ["send-keys", "-t", paneId, "C-c"]);
+}
+
 export async function spawnCanvas(
   kind: string,
   id: string,
@@ -34,6 +115,12 @@ export async function spawnCanvas(
 
   if (!env.inTmux) {
     throw new Error("Canvas requires tmux. Please run inside a tmux session.");
+  }
+
+  // For terminal kind, use pure tmux approach (real PTY)
+  if (kind === "terminal") {
+    const config: TerminalConfig = configJson ? JSON.parse(configJson) : {};
+    return spawnTerminalPane(id, config, options);
   }
 
   // Get the directory of this script (skill directory)
@@ -56,8 +143,7 @@ export async function spawnCanvas(
     command += ` --scenario ${options.scenario}`;
   }
 
-  // For terminal kind, always create new pane (multi-pane support)
-  const forceNew = kind === "terminal" || options?.forceNewPane;
+  const forceNew = options?.forceNewPane;
 
   const result = await spawnTmux(command, id, forceNew, options?.name);
   if (result.success) {
