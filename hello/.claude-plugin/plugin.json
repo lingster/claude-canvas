@@ -1,0 +1,8 @@
+{
+"name": "my-first-plugin",
+"description": "A greeting plugin to learn the basics",
+"version": "0.0.1",
+"author": {
+"name": "Ling Li"
+}
+}
